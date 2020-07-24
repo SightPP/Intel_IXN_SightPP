@@ -23,7 +23,7 @@ struct CaffeModelImpl : public ModelInterface {
 	const float inScaleFactor = 0.007843f;
 	const float meanVal = 127.5;
 
-	const float confidence_threshold = 0.8f;
+	const float confidence_threshold = 0.4f;
 	
 	CaffeModelImpl(std::string prototxt_path, std::string caffemodel_path, const std::string class_names_path, const rs2::video_stream_profile& profile)
 	{
@@ -54,7 +54,7 @@ struct CaffeModelImpl : public ModelInterface {
 
 		ClassificationResult classification_result("caffe-selftrained");
 		
-		for(auto i = 0; i < detection_matrix.rows; i++)
+		for (auto i = 0; i < detection_matrix.rows; i++)
 		{
 			auto confidence = detection_matrix.at<float>(i, 2);
 
@@ -69,15 +69,51 @@ struct CaffeModelImpl : public ModelInterface {
 				auto y_right_top = static_cast<int>(detection_matrix.at<float>(i, 6) * color_matrix.rows);
 
 				cv::Rect object(
-					static_cast<int>(x_left_bottom), static_cast<int>(y_left_bottom), 
-					static_cast<int>(x_right_top - x_left_bottom),	static_cast<int>(y_right_top - y_left_bottom));
-				auto m = cv::mean(depth_matrix(object));
-				auto distance = m[0];
+					static_cast<int>(x_left_bottom), static_cast<int>(y_left_bottom),
+					static_cast<int>(x_right_top - x_left_bottom), static_cast<int>(y_right_top - y_left_bottom));
+				object = object & cv::Rect(0, 0, depth_matrix.cols, depth_matrix.rows);
+				// Calculate valid depth inside the detection region
+				cv::Mat depthMat = depth_matrix(object);
+
+				cv::Mat pixelArray;
+
+				depthMat.convertTo(pixelArray, CV_32F);
+				pixelArray = pixelArray.reshape(1, pixelArray.total());
+				cv::Mat label, centers;
+
+				kmeans(pixelArray, 2, label,
+					cv::TermCriteria(cv::TermCriteria::COUNT + cv::TermCriteria::EPS, 10, 0.1), 1,
+					cv::KMEANS_PP_CENTERS, centers);
+
+
+				// replace pixel values with their center value:
+				float* p = pixelArray.ptr<float>();
+				int groupZero = 0;
+				int groupOne = 0;
+				for (size_t i = 0; i < pixelArray.rows; i++) {
+					int center_id = label.at<int>(i);
+					if (center_id == 0) {
+						groupZero++;
+
+					}
+					else if (center_id == 1) {
+						groupOne++;
+					}
+					p[i] = centers.at<float>(center_id);
+				}
+				float distance = 0;
+				if (groupZero > groupOne) {
+					distance = centers.at<float>(0);
+				}
+				else {
+					distance = centers.at<float>(1);
+				}
 
 				point left_bottom(x_left_bottom, y_left_bottom);
 				point right_top(x_right_top, y_right_top);
-				
-				classification_result.objects.emplace_back(class_names[object_class], distance, left_bottom,right_top);
+
+				classification_result.objects.emplace_back(class_names[object_class], distance, left_bottom, right_top);
+				std::cout << class_names[object_class] << distance << std::endl;
 			}
 		}
 		
